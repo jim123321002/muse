@@ -215,17 +215,35 @@ const texLoader = new THREE.TextureLoader();
 texLoader.setCrossOrigin('anonymous');
 
 setProgress(0.06, '加载森林 HDRI…');
-await new Promise((res) => {
+const hdrOk = await new Promise((res) => {
+  let done = false;
+  const to = setTimeout(() => { if (!done) { done = true; res(false); } }, 30000);
   hdrLoader.load(ASSETS.hdri, (hdr) => {
+    if (done) return; done = true; clearTimeout(to);
     hdr.mapping = THREE.EquirectangularReflectionMapping;
     scene.environment = pmrem.fromEquirectangular(hdr).texture;
     scene.background = hdr;
     scene.backgroundBlurriness = 0.035;
     scene.backgroundIntensity = 0.85;
-    res();
-  }, undefined, () => res());
+    res(true);
+  }, undefined, () => { if (!done) { done = true; clearTimeout(to); res(false); } });
 });
-setProgress(0.28, 'HDRI 就绪 · 加载地面材质…');
+if (hdrOk) {
+  setProgress(0.28, 'HDRI 就绪 · 加载地面材质…');
+} else {
+  /* 备用：渐变天空，保证弱网下场景依然可见 */
+  const cv = document.createElement('canvas'); cv.width = 4; cv.height = 256;
+  const cx = cv.getContext('2d');
+  const gr = cx.createLinearGradient(0, 0, 0, 256);
+  gr.addColorStop(0, '#9fbcd8'); gr.addColorStop(0.55, '#cfd8c8'); gr.addColorStop(1, '#5d6b4a');
+  cx.fillStyle = gr; cx.fillRect(0, 0, 4, 256);
+  const skyTex = new THREE.CanvasTexture(cv);
+  skyTex.mapping = THREE.EquirectangularReflectionMapping;
+  skyTex.colorSpace = THREE.SRGBColorSpace;
+  scene.background = skyTex;
+  scene.environment = pmrem.fromEquirectangular(skyTex).texture;
+  setProgress(0.28, 'HDRI 加载超时 · 已启用备用天空');
+}
 
 /* ============ 灯光 ============ */
 const sun = new THREE.DirectionalLight(0xfff1d6, 2.6);
@@ -328,40 +346,77 @@ async function loadPineGltf() {
   const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;
   return await new Promise((res, rej) => gltfLoader.parse(bin, '', res, rej));
 }
-const pineVariants = [];
+const pineSpots = [];
+for (let i = 0; i < 22; i++) {
+  const a = (i / 22) * Math.PI * 2 + (Math.random() - 0.5) * 0.22;
+  const r = 24 + Math.random() * 13;
+  pineSpots.push([Math.cos(a) * r, Math.sin(a) * r, 6 + Math.random() * 3]);
+}
+pineSpots.push([10.5, 5, 7.5], [-9, 8, 6], [4, -11.5, 6.5]);  // 空地边缘点缀，第三个数为目标树高(米)
+const PINE_INFO = { tag: '植被', name: '松树',
+  desc: 'Poly by Google 低多边形松树（CC-BY），3 种形态随机分布。Poly Haven 的扫描松树单棵数 GB，不适合手机，故选用此轻量模型。' };
+let pineOk = false;
 try {
-  const pineGltf = await loadPineGltf();
+  const pineGltf = await Promise.race([
+    loadPineGltf(),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('pine timeout')), 25000)),
+  ]);
   pineGltf.scene.updateMatrixWorld(true);
+  const variants = [];
   for (const node of pineGltf.scene.children) {
     node.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
     const box = new THREE.Box3().setFromObject(node);
     const c = box.getCenter(new THREE.Vector3());
     const wrap = new THREE.Group();
     const inner = node.clone();
-    inner.position.set(-c.x, -box.min.y + 0.05, -c.z);
+    inner.position.set(-c.x, -box.min.y + 0.02, -c.z);
     wrap.add(inner);
-    pineVariants.push(wrap);
+    wrap.userData.height = box.max.y - box.min.y;  // 模型自身高度（单位与作者有关，按此归一化到目标米数）
+    variants.push(wrap);
   }
-  const spots = [];
-  for (let i = 0; i < 22; i++) {
-    const a = (i / 22) * Math.PI * 2 + (Math.random() - 0.5) * 0.22;
-    const r = 24 + Math.random() * 13;
-    spots.push([Math.cos(a) * r, Math.sin(a) * r, 2.1 + Math.random() * 1.1]);
-  }
-  spots.push([10.5, 5, 2.6], [-9, 8, 2.0], [4, -11.5, 2.3]);  // 空地边缘点缀
-  for (const [x, z, s] of spots) {
-    const t = pineVariants[(Math.random() * pineVariants.length) | 0].clone();
+  for (const [x, z, h] of pineSpots) {
+    const v = variants[(Math.random() * variants.length) | 0];
+    const t = v.clone();
+    t.scale.setScalar(h / v.userData.height);
     t.position.set(x, groundHeight(x, z), z);
     t.rotation.y = Math.random() * Math.PI * 2;
-    t.scale.setScalar(s);
-    t.userData.info = { tag: '植被', name: '松树',
-      desc: 'Poly by Google 低多边形松树（CC-BY），3 种形态随机分布。Poly Haven 的扫描松树单棵数 GB，不适合手机，故选用此轻量模型。' };
+    t.userData.info = PINE_INFO;
     scene.add(t);
     selectables.push(t);
-    colliders.push({ x, z, r: 0.45 * s });
+    colliders.push({ x, z, r: h * 0.055 });
   }
+  pineOk = variants.length > 0;
+  setProgress(0.7, '松树就绪 · 摆放岩石…');
 } catch (e) { console.warn('松树模型加载失败:', e); }
-setProgress(0.7, '松树就绪 · 摆放岩石…');
+if (!pineOk) {
+  /* 备用：简易程序化松树（模型加载失败/超时时保证森林观感） */
+  const trunkG = new THREE.CylinderGeometry(0.16, 0.24, 2.0, 7);
+  const leafG = new THREE.ConeGeometry(1.5, 3.4, 8);
+  const trunkM = new THREE.MeshStandardMaterial({ color: 0x5a3d28, roughness: 1 });
+  const leafM = new THREE.MeshStandardMaterial({ color: 0x2e5230, roughness: 1 });
+  for (const [x, z, h] of pineSpots) {
+    const s = h / 7;
+    const tree = new THREE.Group();
+    const trunk = new THREE.Mesh(trunkG, trunkM);
+    trunk.position.y = 1.0; trunk.castShadow = true;
+    tree.add(trunk);
+    for (let k = 0; k < 3; k++) {
+      const cone = new THREE.Mesh(leafG, leafM);
+      cone.position.y = 2.2 + k * 1.35;
+      cone.scale.setScalar(1 - k * 0.22);
+      cone.castShadow = true;
+      tree.add(cone);
+    }
+    tree.position.set(x, groundHeight(x, z), z);
+    tree.rotation.y = Math.random() * Math.PI * 2;
+    tree.scale.setScalar(s);
+    tree.userData.info = { tag: '植被', name: '松树（备用）', desc: '松树模型加载失败时的备用树木。' };
+    scene.add(tree);
+    selectables.push(tree);
+    colliders.push({ x, z, r: h * 0.055 });
+  }
+  setProgress(0.7, '松树模型不可用 · 已使用备用树木');
+}
 
 /* ============ 岩石（rock_boulder_dry PBR） ============ */
 const rk = pbr(ASSETS.rock, 1.4, 1.4);
@@ -425,7 +480,10 @@ const UP = new THREE.Vector3(0, 1, 0);
 const player = { mesh: null, mixer: null, idle: null, run: null, cur: 'idle',
   pos: new THREE.Vector3(0, 0, 8), yaw: Math.PI, vy: 0, grounded: true, speed: 0, ready: false };
 try {
-  const xgltf = await gltfLoader.loadAsync(ASSETS.xbot);
+  const xgltf = await Promise.race([
+    gltfLoader.loadAsync(ASSETS.xbot),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('xbot timeout')), 25000)),
+  ]);
   const m = xgltf.scene;
   m.traverse((o) => { if (o.isMesh) o.castShadow = true; });
   const clips = {};
