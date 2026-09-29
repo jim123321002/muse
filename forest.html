@@ -5,11 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>森林空地 · Forest Clearing</title>
 <!--
-  forest.html v2 —— 手机端可操控人物版
+  forest.html v3 —— 骑士版：着甲骑士 + 佩剑 + 攻击
   - HDRI: Poly Haven "Forest Slope" (CC0) https://polyhaven.com/a/forest_slope
   - PBR: forest_ground_04 / bark_brown_02 / rock_boulder_dry (CC0, 1K)
   - 松树: "Pine tree" by Poly by Google (CC-BY) via Poly Pizza https://poly.pizza/m/bpV3f5je3rl
-  - 人物: Xbot (three.js 示例, Mixamo 骨骼动画 idle/walk/run)
+  - 骑士: KayKit Adventurers "Knight" (CC0) https://github.com/KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0
+  - 剑: "Sword" by Quaternius (CC0) via Poly Pizza https://poly.pizza/m/Ds2bJiNI5w
   - Three.js r160 + postprocessing, import map 走 unpkg / jsdelivr
 -->
 <style>
@@ -66,6 +67,14 @@
     display:none; touch-action:none; }
   #jumpBtn.show { display:block; }
   #jumpBtn:active { background:rgba(127,163,107,.85); transform:scale(.94); }
+  /* 攻击按钮 */
+  #attackBtn { position:fixed; right:26px; bottom:calc(138px + env(safe-area-inset-bottom)); z-index:10;
+    width:78px; height:78px; border-radius:50%;
+    border:2px solid rgba(255,255,255,.3); background:rgba(178,102,84,.55); color:#fff;
+    font-size:30px; backdrop-filter:blur(4px);
+    display:none; touch-action:none; }
+  #attackBtn.show { display:block; }
+  #attackBtn:active { background:rgba(178,102,84,.9); transform:scale(.94); }
 
   /* 信息卡 */
   #card { position:fixed; left:50%; bottom:calc(18px + env(safe-area-inset-bottom)); transform:translate(-50%,120%);
@@ -105,6 +114,7 @@
 </div>
 
 <div id="joy"><div id="knob"></div></div>
+<button id="attackBtn">⚔️</button>
 <button id="jumpBtn">跳跃</button>
 
 <div id="card">
@@ -149,7 +159,8 @@ const ASSETS = {
     rough: `${PH}/Textures/jpg/1k/rock_boulder_dry/rock_boulder_dry_rough_1k.jpg`,
   },
   pine: './models/pine.glb',                                   // Poly by Google "Pine tree" CC-BY, poly.pizza
-  xbot: 'https://threejs.org/examples/models/gltf/Xbot.glb',    // Mixamo X 机器人, idle/walk/run
+  knight: 'https://raw.githubusercontent.com/KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0/main/addons/kaykit_character_pack_adventures/Characters/gltf/Knight.glb',  // KayKit 骑士 CC0: Idle/Running/1H_Melee_Attack_*
+  sword: 'models/sword.glb',  // Quaternius 剑 CC0（base64 存仓库）
 };
 
 /* ============ 基础设置 ============ */
@@ -475,33 +486,64 @@ setProgress(0.78, '场景搭建完成 · 加载人物…');
   var dustPts = dust;
 }
 
-/* ============ 人物（Xbot，可操控） ============ */
+/* ============ 骑士（KayKit CC0，可操控：奔跑/跳跃/攻击） ============ */
 const UP = new THREE.Vector3(0, 1, 0);
-const player = { mesh: null, mixer: null, idle: null, run: null, cur: 'idle',
-  pos: new THREE.Vector3(0, 0, 8), yaw: Math.PI, vy: 0, grounded: true, speed: 0, ready: false };
+const player = { group: new THREE.Group(), model: null, mixer: null, act: {}, action: null,
+  clips: {}, mode: 'idle', pos: new THREE.Vector3(0, 0, 8), yaw: Math.PI,
+  vy: 0, grounded: true, speed: 0, ready: false, attackT: 0, attackDur: 0, kOff: 0 };
+player.fadeTo = (name, dur = 0.25) => {
+  const next = player.act[name];
+  if (!next || player.action === next) return;
+  if (player.action) player.action.fadeOut(dur);
+  next.reset().fadeIn(dur).play();
+  player.action = next;
+};
+scene.add(player.group);
+setProgress(0.84, '加载骑士…');
 try {
-  const xgltf = await Promise.race([
-    gltfLoader.loadAsync(ASSETS.xbot),
-    new Promise((_, rej) => setTimeout(() => rej(new Error('xbot timeout')), 25000)),
+  const kgltf = await Promise.race([
+    gltfLoader.loadAsync(ASSETS.knight),
+    new Promise((_, rej) => setTimeout(() => rej(new Error('knight timeout')), 45000)),
   ]);
-  const m = xgltf.scene;
-  m.traverse((o) => { if (o.isMesh) o.castShadow = true; });
-  const clips = {};
-  xgltf.animations.forEach((c) => clips[c.name] = c);
-  const mixer = new THREE.AnimationMixer(m);
-  player.idle = mixer.clipAction(clips['idle']); player.idle.play();
-  player.run = mixer.clipAction(clips['run']);
-  player.mixer = mixer; player.mesh = m;
+  const m = kgltf.scene;
+  m.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; } });
+  /* 双脚着地：模型原点不在脚底，按包围盒修正 */
+  const kbox = new THREE.Box3().setFromObject(m);
+  player.kOff = -kbox.min.y;
+  m.position.y = player.kOff;
+  player.group.add(m);
+  player.model = m;
+  player.mixer = new THREE.AnimationMixer(m);
+  for (const c of kgltf.animations) player.clips[c.name] = c;
+  for (const n of ['Idle', 'Running_A', '1H_Melee_Attack_Chop', '1H_Melee_Attack_Stab']) {
+    const clip = player.clips[n];
+    if (!clip) continue;
+    const a = player.mixer.clipAction(clip);
+    if (n.startsWith('1H_Melee')) { a.setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = true; }
+    player.act[n] = a;
+  }
+  player.fadeTo('Idle', 0.1);
+  /* 佩剑：Quaternius CC0，挂到右手武器槽 */
+  try {
+    const sb64 = (await (await fetch(ASSETS.sword)).text()).trim();
+    const sbin = Uint8Array.from(atob(sb64), (c) => c.charCodeAt(0)).buffer;
+    const sgltf = await new Promise((res, rej) => gltfLoader.parse(sbin, '', res, rej));
+    const sword = sgltf.scene;
+    sword.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+    const slot = m.getObjectByName('handslot.r') || m.getObjectByName('hand.r');
+    if (slot) { slot.add(sword); sword.rotation.set(0, 0, Math.PI / 2); }
+    else console.warn('未找到右手骨骼');
+  } catch (e) { console.warn('剑加载失败:', e); }
   player.pos.y = groundHeight(0, 8);
-  m.position.copy(player.pos);
-  m.rotation.y = player.yaw;
-  m.userData.info = { tag: '人物', name: '旅人 X',
-    desc: '由你操控的旅人。左侧摇杆（或 WASD）奔跑，右侧按钮（或空格）跳跃，拖动画面旋转视角。' };
-  scene.add(m);
-  selectables.push(m);
+  m.userData.info = { tag: '人物', name: '骑士',
+    desc: '由你操控的骑士（KayKit CC0 模型，着甲佩剑）。左侧摇杆（或 WASD）奔跑，⚔️ 按钮（或 F）挥剑攻击，右侧按钮（或空格）跳跃。' };
+  selectables.push(player.group);
   player.ready = true;
-} catch (e) { console.warn('人物模型加载失败:', e); }
-setProgress(0.88, '人物就绪 · 合成后期…');
+  setProgress(0.88, '骑士就绪 · 合成后期…');
+} catch (e) {
+  console.warn('骑士加载失败:', e);
+  setProgress(0.88, '骑士加载失败 · 请检查网络后刷新');
+}
 
 /* 初始镜头：人物身后 */
 camera.position.set(player.pos.x, player.pos.y + 4.4, player.pos.z + 9.5);
@@ -518,20 +560,22 @@ const toneEffect = new EffectPass(camera,
 composer.addPass(toneEffect);
 setProgress(0.95, '完成');
 
-/* ============ 输入：摇杆 / 跳跃 / 键盘 ============ */
+/* ============ 输入：摇杆 / 按钮 / 键盘 ============ */
 const input = { x: 0, y: 0, joyActive: false };
-let jumpQueued = false;
+let jumpQueued = false, attackQueued = false;
 const keys = {};
 addEventListener('keydown', (e) => {
   keys[e.code] = true;
   if (e.code === 'Space') { jumpQueued = true; e.preventDefault(); }
+  if (e.code === 'KeyF') { attackQueued = true; }
 });
 addEventListener('keyup', (e) => keys[e.code] = false);
 
 const joyEl = document.getElementById('joy');
 const knobEl = document.getElementById('knob');
 const jumpEl = document.getElementById('jumpBtn');
-if (isTouch && player.ready) { joyEl.classList.add('show'); jumpEl.classList.add('show'); }
+const attackEl = document.getElementById('attackBtn');
+if (isTouch && player.ready) { joyEl.classList.add('show'); jumpEl.classList.add('show'); attackEl.classList.add('show'); }
 let joyId = null;
 function joyHandle(e) {
   const r = joyEl.getBoundingClientRect();
@@ -552,6 +596,33 @@ const joyEnd = (e) => {
 joyEl.addEventListener('pointerup', joyEnd);
 joyEl.addEventListener('pointercancel', joyEnd);
 jumpEl.addEventListener('pointerdown', (e) => { jumpQueued = true; e.preventDefault(); });
+attackEl.addEventListener('pointerdown', (e) => { attackQueued = true; e.preventDefault(); });
+
+/* ============ 攻击：挥剑 + 弧光特效 ============ */
+const slashes = [];
+function tryAttack() {
+  if (!player.ready || player.attackT > 0) return;
+  const names = ['1H_Melee_Attack_Chop', '1H_Melee_Attack_Stab'].filter((n) => player.act[n]);
+  if (!names.length) return;
+  const name = names[(Math.random() * names.length) | 0];
+  player.attackDur = Math.min(player.clips[name].duration, 1.2);
+  player.attackT = player.attackDur;
+  player.mode = 'attack';
+  player.fadeTo(name, 0.1);
+  const g = new THREE.TorusGeometry(1.15, 0.06, 8, 40, Math.PI * 1.2);
+  const mt = new THREE.MeshBasicMaterial({ color: 0xd6ecff, transparent: true, opacity: 0.9,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  const mesh = new THREE.Mesh(g, mt);
+  const gy = groundHeight(player.pos.x, player.pos.z);
+  mesh.position.set(
+    player.pos.x + Math.sin(player.yaw) * 1.1,
+    gy + 1.35,
+    player.pos.z + Math.cos(player.yaw) * 1.1);
+  mesh.rotation.set(Math.PI / 2.4, player.yaw, 0);
+  mesh.userData.t = 0.35;
+  scene.add(mesh);
+  slashes.push(mesh);
+}
 
 function readInput() {
   if (input.joyActive) return { x: input.x, y: input.y };
@@ -578,7 +649,7 @@ resetBtn.onclick = () => {
   controls.target.set(player.pos.x, player.pos.y + 1.7, player.pos.z);
 };
 document.getElementById('cardClose').onclick = () => card.classList.remove('show');
-hint.textContent = isTouch ? '左侧摇杆奔跑 · 右侧跳跃 · 点击树木/岩石查看 · 双指缩放' : 'WASD 奔跑 · 空格跳跃 · 点击物体查看 · 滚轮缩放';
+hint.textContent = isTouch ? '摇杆奔跑 · ⚔️攻击 · 跳跃 · 点击物体查看 · 双指缩放' : 'WASD 奔跑 · F 攻击 · 空格跳跃 · 点击物体查看 · 滚轮缩放';
 setTimeout(() => hint.classList.add('show'), 1200);
 setTimeout(() => hint.classList.add('hide'), 9000);
 
@@ -615,12 +686,25 @@ function animate() {
     /* 输入 → 相机相对方向 */
     const { x: ix, y: iy } = readInput();
     const mag = Math.min(1, Math.hypot(ix, iy));
-    if ((mag > 0.08 || jumpQueued) && controls.autoRotate) {
+    if ((mag > 0.08 || jumpQueued || attackQueued) && controls.autoRotate) {
       controls.autoRotate = false; autoBtn.classList.remove('on');
     }
-    const targetSpeed = mag * 6.0;
-    player.speed += (targetSpeed - player.speed) * Math.min(1, dt * 8);
-    if (mag > 0.08) {
+    /* 攻击状态机：挥剑时锁定移动 */
+    if (attackQueued) { attackQueued = false; tryAttack(); }
+    const attacking = player.attackT > 0;
+    if (attacking) {
+      player.attackT -= dt;
+      player.speed += (0 - player.speed) * Math.min(1, dt * 10);
+      if (player.attackT <= 0 && player.mode === 'attack') {
+        player.mode = 'Idle'; player.fadeTo('Idle', 0.2);
+      }
+    } else {
+      const want = mag > 0.08 ? 'Running_A' : 'Idle';
+      if (player.mode !== want) { player.mode = want; player.fadeTo(want, 0.25); }
+      const targetSpeed = mag * 6.0;
+      player.speed += (targetSpeed - player.speed) * Math.min(1, dt * 8);
+    }
+    if (mag > 0.08 && !attacking) {
       camera.getWorldDirection(tmpFwd); tmpFwd.y = 0;
       if (tmpFwd.lengthSq() < 1e-6) tmpFwd.set(0, 0, -1); tmpFwd.normalize();
       tmpRight.crossVectors(tmpFwd, UP).normalize();
@@ -650,19 +734,24 @@ function animate() {
     }
     const rr = Math.hypot(player.pos.x, player.pos.z);
     if (rr > 40) { player.pos.x *= 40 / rr; player.pos.z *= 40 / rr; }
-    /* 动画状态 */
-    const wantRun = player.speed > 0.5;
-    if (wantRun && player.cur !== 'run') {
-      player.cur = 'run';
-      player.idle.fadeOut(0.25); player.run.reset().fadeIn(0.25).play();
-    } else if (!wantRun && player.cur !== 'idle') {
-      player.cur = 'idle';
-      player.run.fadeOut(0.25); player.idle.reset().fadeIn(0.25).play();
+    /* 跑步动画速度匹配 */
+    if (player.action === player.act['Running_A'] && player.speed > 0.5) {
+      player.action.timeScale = 0.75 + (player.speed / 6) * 0.55;
+    } else if (player.action) {
+      player.action.timeScale = 1;
     }
-    if (player.cur === 'run') player.run.timeScale = 0.75 + (player.speed / 6) * 0.55;
-    player.mesh.position.copy(player.pos);
-    player.mesh.rotation.y = player.yaw;
+    player.group.position.copy(player.pos);
+    player.group.rotation.y = player.yaw;
     player.mixer.update(dt);
+    /* 挥砍弧光更新 */
+    for (let i = slashes.length - 1; i >= 0; i--) {
+      const s = slashes[i];
+      s.userData.t -= dt;
+      const k = Math.max(0, s.userData.t / 0.35);
+      s.material.opacity = k * 0.9;
+      s.scale.setScalar(1 + (1 - k) * 0.7);
+      if (s.userData.t <= 0) { scene.remove(s); s.geometry.dispose(); s.material.dispose(); slashes.splice(i, 1); }
+    }
     /* 镜头跟随：目标点平滑追人物，保持用户旋转偏移 */
     tmpT.copy(player.pos); tmpT.y += 1.7;
     tmpT.sub(controls.target).multiplyScalar(Math.min(1, dt * 4.5));
