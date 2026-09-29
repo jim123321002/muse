@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>森林空地 · Forest Clearing</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0f0a;
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+
+  /* 加载遮罩 */
+  #loader { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px;
+    background: radial-gradient(ellipse at 50% 40%, #16241a 0%, #0a0f0a 70%); color: #dfe8dc;
+    transition: opacity .8s ease; }
+  #loader.done { opacity: 0; pointer-events: none; }
+  #loader .title { font-size: 22px; letter-spacing: 6px; font-weight: 600; }
+  #loader .sub { font-size: 12px; opacity: .6; letter-spacing: 2px; }
+  #bar-wrap { width: min(68vw, 320px); height: 4px; border-radius: 2px; background: rgba(255,255,255,.12); overflow: hidden; }
+  #bar { width: 0%; height: 100%; border-radius: 2px;
+    background: linear-gradient(90deg, #7fb069, #cae7b9); transition: width .25s ease; }
+  #load-info { font-size: 12px; opacity: .55; min-height: 18px; }
+
+  /* 顶部标题 */
+  #hud { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 16px; z-index: 20;
+    color: #fff; pointer-events: none; opacity: 0; transition: opacity 1s ease .3s; }
+  #hud.show { opacity: 1; }
+  #hud h1 { font-size: 17px; font-weight: 600; letter-spacing: 3px;
+    text-shadow: 0 1px 8px rgba(0,0,0,.6); }
+  #hud p { font-size: 11px; opacity: .65; margin-top: 4px; letter-spacing: 1px;
+    text-shadow: 0 1px 6px rgba(0,0,0,.6); }
+
+  /* 右下按钮 */
+  #btns { position: fixed; right: 14px; bottom: max(18px, env(safe-area-inset-bottom)); z-index: 20;
+    display: flex; flex-direction: column; gap: 10px; opacity: 0; transition: opacity 1s ease .5s; }
+  #btns.show { opacity: 1; }
+  #btns button { width: 46px; height: 46px; border-radius: 50%; border: 1px solid rgba(255,255,255,.25);
+    background: rgba(10,15,10,.55); color: #fff; font-size: 19px; cursor: pointer;
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+  #btns button:active { transform: scale(.92); }
+  #btns button.on { background: rgba(127,176,105,.75); border-color: rgba(255,255,255,.5); }
+
+  /* 选中信息卡 */
+  #card { position: fixed; left: 14px; bottom: max(18px, env(safe-area-inset-bottom)); z-index: 20;
+    max-width: 62vw; padding: 12px 14px; border-radius: 12px; color: #fff;
+    background: rgba(10,15,10,.62); border: 1px solid rgba(255,255,255,.14);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    transform: translateY(12px); opacity: 0; pointer-events: none; transition: all .3s ease; }
+  #card.show { transform: none; opacity: 1; }
+  #card h2 { font-size: 14px; margin-bottom: 4px; }
+  #card p { font-size: 12px; opacity: .75; line-height: 1.6; }
+  #card .tag { display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 99px;
+    background: rgba(127,176,105,.3); margin-bottom: 6px; letter-spacing: 1px; }
+
+  /* 操作提示 */
+  #hint { position: fixed; bottom: max(86px, calc(env(safe-area-inset-bottom) + 68px)); left: 50%;
+    transform: translateX(-50%); z-index: 20; color: #fff; font-size: 12px; letter-spacing: 1px;
+    background: rgba(10,15,10,.55); padding: 8px 16px; border-radius: 99px; white-space: nowrap;
+    opacity: 0; transition: opacity 1s ease .8s; pointer-events: none; }
+  #hint.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="loader">
+  <div class="title">森林空地</div>
+  <div class="sub">FOREST CLEARING</div>
+  <div id="bar-wrap"><div id="bar"></div></div>
+  <div id="load-info">正在准备…</div>
+</div>
+
+<div id="hud"><h1>森林空地</h1><p>Poly Haven 实拍素材 · Three.js 实时渲染</p></div>
+<div id="btns">
+  <button id="btn-rotate" title="自动旋转">⟳</button>
+  <button id="btn-reset" title="重置视角">⌂</button>
+</div>
+<div id="card"><span class="tag" id="card-tag"></span><h2 id="card-title"></h2><p id="card-desc"></p></div>
+<div id="hint">单指拖拽旋转 · 双指缩放 · 点击树木查看</div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+/* ============ 素材（Poly Haven, CC0） ============ */
+const CDN = 'https://dl.polyhaven.org/file/ph-assets';
+const ASSETS = {
+  hdri:      `${CDN}/HDRIs/hdr/2k/forest_slope_2k.hdr`,          // Forest Slope · Andreas Mischok · 针叶林清晨
+  ground: {  // Forest Ground 04 · PBR
+    map:  `${CDN}/Textures/jpg/1k/forest_ground_04/forest_ground_04_diff_1k.jpg`,
+    nrm:  `${CDN}/Textures/jpg/1k/forest_ground_04/forest_ground_04_nor_gl_1k.jpg`,
+    rgh:  `${CDN}/Textures/jpg/1k/forest_ground_04/forest_ground_04_rough_1k.jpg` },
+  bark: {    // Bark Brown 02 · PBR
+    map:  `${CDN}/Textures/jpg/1k/bark_brown_02/bark_brown_02_diff_1k.jpg`,
+    nrm:  `${CDN}/Textures/jpg/1k/bark_brown_02/bark_brown_02_nor_gl_1k.jpg`,
+    rgh:  `${CDN}/Textures/jpg/1k/bark_brown_02/bark_brown_02_rough_1k.jpg` },
+  rock: {    // Rock Boulder Dry · PBR
+    map:  `${CDN}/Textures/jpg/1k/rock_boulder_dry/rock_boulder_dry_diff_1k.jpg`,
+    nrm:  `${CDN}/Textures/jpg/1k/rock_boulder_dry/rock_boulder_dry_nor_gl_1k.jpg`,
+    rgh:  `${CDN}/Textures/jpg/1k/rock_boulder_dry/rock_boulder_dry_rough_1k.jpg` },
+};
+// 树木说明：Poly Haven 的扫描树木模型（如 island_tree_01，400 万面 / 338MB）
+// 远超手机端可承受的加载与渲染开销，因此树木采用程序化建模（真实比例），
+// 树干使用上方真实的 Bark Brown 02 PBR 材质。
+
+/* ============ 加载管理 ============ */
+const bar = document.getElementById('bar');
+const loadInfo = document.getElementById('load-info');
+const manager = new THREE.LoadingManager();
+manager.onProgress = (url, loaded, total) => {
+  const p = Math.round(loaded / total * 100);
+  bar.style.width = p + '%';
+  const name = url.split('/').pop();
+  loadInfo.textContent = `加载中 ${p}% · ${name}`;
+};
+const texLoader = new THREE.TextureLoader(manager);
+texLoader.setCrossOrigin('anonymous');
+const hdrLoader = new RGBELoader(manager);
+hdrLoader.setCrossOrigin('anonymous');
+
+function pbr(set, rx, ry, srgb = true) {
+  const map = texLoader.load(set.map);
+  if (srgb) map.colorSpace = THREE.SRGBColorSpace;
+  const nrm = texLoader.load(set.nrm);
+  const rgh = texLoader.load(set.rgh);
+  for (const t of [map, nrm, rgh]) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rx, ry); }
+  return { map, nrm, rgh };
+}
+
+/* ============ 渲染器 / 场景 ============ */
+const app = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+const PR = Math.min(window.devicePixelRatio || 1, 2);
+renderer.setPixelRatio(PR);
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+app.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x93a58e, 0.011);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 400);
+const CAM_HOME = new THREE.Vector3(10.5, 4.6, 14.5);
+camera.position.copy(CAM_HOME);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.4, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.minDistance = 5;
+controls.maxDistance = 30;
+controls.maxPolarAngle = 1.45;          // 不钻到地面以下
+controls.minPolarAngle = 0.12;
+controls.enablePan = false;             // 手机端禁用平移，避免丢失场景
+controls.autoRotateSpeed = 0.7;
+controls.update();
+
+/* 简单伪噪声（用于地形/几何置换） */
+function noise2(x, z) {
+  return Math.sin(x * 0.31 + z * 0.17) * 0.5 + Math.sin(x * 0.13 - z * 0.29 + 1.7) * 0.3
+       + Math.sin(x * 0.71 + z * 0.53 + 4.2) * 0.2;
+}
+function jitter(geo, amt, freq = 1) {
+  const p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    const n = noise2(x * freq + y * 0.7, z * freq - y * 0.5);
+    p.setXYZ(i, x + n * amt, y + n * amt * 0.7, z + n * amt);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/* ============ 环境光照（HDRI） ============ */
+const pmrem = new THREE.PMREMGenerator(renderer);
+let envReady = false;
+hdrLoader.load(ASSETS.hdri, (hdr) => {
+  hdr.mapping = THREE.EquirectangularReflectionMapping;
+  const envRT = pmrem.fromEquirectangular(hdr);
+  scene.environment = envRT.texture;
+  scene.background = hdr;
+  scene.backgroundBlurriness = 0.035;
+  scene.backgroundIntensity = 0.85;
+  envReady = true;
+});
+
+/* ============ 灯光 ============ */
+const sun = new THREE.DirectionalLight(0xfff1d6, 2.6);
+sun.position.set(18, 26, 10);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -30; sun.shadow.camera.right = 30;
+sun.shadow.camera.top = 30; sun.shadow.camera.bottom = -30;
+sun.shadow.camera.near = 5; sun.shadow.camera.far = 70;
+sun.shadow.bias = -0.0006;
+sun.shadow.normalBias = 0.02;
+scene.add(sun);
+scene.add(new THREE.HemisphereLight(0xbcd0e8, 0x3a4a2e, 0.35));
+
+/* ============ 地面 ============ */
+const g = pbr(ASSETS.ground, 14, 14);
+const groundMat = new THREE.MeshStandardMaterial({
+  map: g.map, normalMap: g.nrm, roughnessMap: g.rgh,
+  roughness: 1.0, metalness: 0.0, color: 0xb9c4a8,
+});
+const groundGeo = new THREE.PlaneGeometry(120, 120, 110, 110);
+groundGeo.rotateX(-Math.PI / 2);
+{
+  const p = groundGeo.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), z = p.getZ(i);
+    const r = Math.hypot(x, z);
+    const flat = THREE.MathUtils.smoothstep(r, 7, 16); // 中央空地压平
+    p.setY(i, noise2(x, z) * 1.1 * flat + noise2(x * 3.1, z * 3.1) * 0.12 * flat);
+  }
+  groundGeo.computeVertexNormals();
+}
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ============ 树木（程序化松树，真实比例） ============ */
+const barkT = pbr(ASSETS.bark, 1.5, 2.5);
+const barkMat = new THREE.MeshStandardMaterial({
+  map: barkT.map, normalMap: barkT.nrm, roughnessMap: barkT.rgh, roughness: 1.0, color: 0xcfc4b4,
+});
+const leafColors = [0x2d4a22, 0x335226, 0x2a4420, 0x3a5c2a];
+const selectables = [];
+
+function makePine(h = 9) {
+  const tree = new THREE.Group();
+  const trunkH = h * 0.38;
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.14 * h / 9, 0.32 * h / 9, trunkH, 7), barkMat);
+  trunk.position.y = trunkH / 2;
+  trunk.castShadow = true;
+  tree.add(trunk);
+  const layers = 5;
+  const leafMat = new THREE.MeshStandardMaterial({
+    color: leafColors[(Math.random() * leafColors.length) | 0],
+    roughness: 0.95, metalness: 0.0,
+  });
+  for (let i = 0; i < layers; i++) {
+    const t = i / (layers - 1);
+    const r = (1 - t * 0.72) * h * 0.22;
+    const ch = h * 0.30;
+    const cone = new THREE.ConeGeometry(r, ch, 9, 3);
+    jitter(cone, r * 0.10, 1.4);
+    const m = new THREE.Mesh(cone, leafMat);
+    m.position.y = trunkH * 0.72 + t * h * 0.52;
+    m.rotation.y = Math.random() * Math.PI;
+    m.castShadow = true;
+    tree.add(m);
+  }
+  tree.userData = { type: 'pine', h };
+  return tree;
+}
+
+// 外圈树墙 + 几棵近景树
+const treeGroup = new THREE.Group();
+scene.add(treeGroup);
+function plantPine(x, z, s) {
+  const t = makePine(8 + Math.random() * 4);
+  t.position.set(x, 0, z);
+  t.scale.setScalar(s);
+  t.rotation.y = Math.random() * Math.PI * 2;
+  treeGroup.add(t);
+  selectables.push(t);
+  return t;
+}
+for (let i = 0; i < 22; i++) {           // 远圈
+  const a = (i / 22) * Math.PI * 2 + Math.random() * 0.25;
+  const r = 24 + Math.random() * 14;
+  plantPine(Math.cos(a) * r, Math.sin(a) * r, 0.9 + Math.random() * 0.7);
+}
+const heroTrees = [];
+[[13, 5, 1.15], [-11, 9, 1.0], [-6, -13, 1.25], [9, -11, 0.95]].forEach(([x, z, s]) => {
+  heroTrees.push(plantPine(x, z, s));
+});
+
+/* 树桩 */
+{
+  const stump = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.7, 0.8, 10), barkMat);
+  stump.position.set(3.4, 0.32, 4.2);
+  stump.castShadow = stump.receiveShadow = true;
+  const top = new THREE.Mesh(new THREE.CircleGeometry(0.55, 10),
+    new THREE.MeshStandardMaterial({ color: 0xb99b6e, roughness: 0.9 }));
+  top.rotation.x = -Math.PI / 2; top.position.set(3.4, 0.73, 4.2);
+  scene.add(stump, top);
+  stump.userData = { type: 'stump' };
+  selectables.push(stump);
+}
+
+/* ============ 岩石 ============ */
+const rockT = pbr(ASSETS.rock, 1, 1);
+const rockMat = new THREE.MeshStandardMaterial({
+  map: rockT.map, normalMap: rockT.nrm, roughnessMap: rockT.rgh, roughness: 1.0, color: 0xd8d4c8,
+});
+for (let i = 0; i < 7; i++) {
+  const s = 0.5 + Math.random() * 1.1;
+  const geo = new THREE.IcosahedronGeometry(s, 2);
+  jitter(geo, s * 0.22, 1.8);
+  const rock = new THREE.Mesh(geo, rockMat);
+  const a = Math.random() * Math.PI * 2, r = 4 + Math.random() * 16;
+  rock.position.set(Math.cos(a) * r, s * 0.28, Math.sin(a) * r);
+  rock.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+  rock.castShadow = rock.receiveShadow = true;
+  rock.userData = { type: 'rock', s };
+  scene.add(rock);
+  selectables.push(rock);
+}
+
+/* ============ 草丛（实例化草叶 + 风） ============ */
+const uTime = { value: 0 };
+{
+  const blade = new THREE.PlaneGeometry(0.09, 0.85, 1, 3);
+  blade.translate(0, 0.425, 0);
+  const bp = blade.attributes.position;
+  for (let i = 0; i < bp.count; i++) {           // 顶部收尖 + 轻微弯曲
+    const y = bp.getY(i) / 0.85;
+    bp.setX(i, bp.getX(i) * (1 - y * 0.85));
+    bp.setZ(i, Math.pow(y, 2) * 0.18);
+  }
+  blade.computeVertexNormals();
+  const grassMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff, roughness: 0.9, metalness: 0, side: THREE.DoubleSide,
+  });
+  grassMat.onBeforeCompile = (sh) => {
+    sh.uniforms.uTime = uTime;
+    sh.vertexShader = 'uniform float uTime;\n' + sh.vertexShader.replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+      #ifdef USE_INSTANCING
+        vec4 gw = instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+        float swayAmt = smoothstep(0.05, 0.85, position.y);
+        float sway = sin(uTime * 1.9 + gw.x * 0.9 + gw.z * 0.7) * 0.10 * swayAmt;
+        transformed.x += sway; transformed.z += sway * 0.55;
+      #endif`
+    );
+  };
+  const COUNT = 4200;
+  const grass = new THREE.InstancedMesh(blade, grassMat, COUNT);
+  const dummy = new THREE.Object3D();
+  const cA = new THREE.Color(0x4a6b2f), cB = new THREE.Color(0x7fa050), cc = new THREE.Color();
+  for (let i = 0; i < COUNT; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = 1.5 + Math.pow(Math.random(), 0.7) * 13.5;
+    dummy.position.set(Math.cos(a) * r, 0, Math.sin(a) * r);
+    dummy.rotation.y = Math.random() * Math.PI;
+    dummy.scale.setScalar(0.7 + Math.random() * 0.9);
+    dummy.updateMatrix();
+    grass.setMatrixAt(i, dummy.matrix);
+    cc.lerpColors(cA, cB, Math.random());
+    grass.setColorAt(i, cc);
+  }
+  grass.instanceMatrix.needsUpdate = true;
+  if (grass.instanceColor) grass.instanceColor.needsUpdate = true;
+  scene.add(grass);
+}
+
+/* ============ 漂浮微粒（花粉/光尘） ============ */
+let motes;
+{
+  const N = 130;
+  const pos = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    pos[i * 3] = (Math.random() - 0.5) * 36;
+    pos[i * 3 + 1] = 0.5 + Math.random() * 6;
+    pos[i * 3 + 2] = (Math.random() - 0.5) * 36;
+  }
+  const mg = new THREE.BufferGeometry();
+  mg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  motes = new THREE.Points(mg, new THREE.PointsMaterial({
+    color: 0xfff2c0, size: 0.09, transparent: true, opacity: 0.75,
+    blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true,
+  }));
+  scene.add(motes);
+}
+
+/* ============ 后期 ============ */
+const rt = new THREE.WebGLRenderTarget(innerWidth * PR, innerHeight * PR, {
+  samples: 4, type: THREE.HalfFloatType,
+});
+const composer = new EffectComposer(renderer, rt);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(innerWidth, innerHeight), 0.22, 0.55, 0.82); // 轻微辉光
+composer.addPass(bloom);
+const gradePass = new ShaderPass({
+  uniforms: { tDiffuse: { value: null } },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse; varying vec2 vUv;
+    void main(){
+      vec4 c = texture2D(tDiffuse, vUv);
+      // 轻微暗角
+      float d = distance(vUv, vec2(0.5, 0.46));
+      c.rgb *= mix(1.0, smoothstep(0.92, 0.30, d), 0.32);
+      // 轻微饱和度提升 + 暖调
+      float l = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+      c.rgb = mix(vec3(l), c.rgb, 1.07);
+      c.rgb *= vec3(1.015, 1.0, 0.985);
+      gl_FragColor = c;
+    }`,
+});
+composer.addPass(gradePass);
+composer.addPass(new OutputPass());
+
+/* ============ 交互：点击选择 ============ */
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+const card = document.getElementById('card');
+const cardTag = document.getElementById('card-tag');
+const cardTitle = document.getElementById('card-title');
+const cardDesc = document.getElementById('card-desc');
+let selected = null;
+const ring = new THREE.Mesh(
+  new THREE.RingGeometry(0.9, 1.12, 40),
+  new THREE.MeshBasicMaterial({ color: 0xffe08a, transparent: true, opacity: 0.85, side: THREE.DoubleSide })
+);
+ring.rotation.x = -Math.PI / 2;
+ring.visible = false;
+scene.add(ring);
+
+const INFO = {
+  pine:  (o) => ['植物', '松树', `程序化生成的松树，高约 ${(o.userData.h * o.scale.x).toFixed(1)} 米，树干使用 Poly Haven 真实树皮 PBR 材质。`],
+  rock:  (o) => ['岩石', '苔藓岩', `使用 Rock Boulder Dry 实拍 PBR 材质，高约 ${(o.userData.s * 1.4).toFixed(1)} 米。`],
+  stump: () => ['植物', '树桩', '被伐倒的老树留下的树桩，年轮清晰可见。'],
+};
+function select(obj) {
+  selected = obj;
+  if (!obj) { ring.visible = false; card.classList.remove('show'); return; }
+  const [tag, title, desc] = INFO[obj.userData.type](obj);
+  cardTag.textContent = tag; cardTitle.textContent = title; cardDesc.textContent = desc;
+  card.classList.add('show');
+  const p = new THREE.Vector3();
+  obj.getWorldPosition(p);
+  const r = obj.userData.type === 'pine' ? 1.6 * obj.scale.x : 1.3;
+  ring.scale.setScalar(r);
+  ring.position.set(p.x, 0.06, p.z);
+  ring.visible = true;
+}
+let downX = 0, downY = 0, downT = 0;
+renderer.domElement.addEventListener('pointerdown', (e) => { downX = e.clientX; downY = e.clientY; downT = performance.now(); });
+renderer.domElement.addEventListener('pointerup', (e) => {
+  const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+  if (moved > 8 || performance.now() - downT > 400) return;   // 拖拽不算点击
+  pointer.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObjects(selectables, true);
+  if (hits.length) {
+    let o = hits[0].object;
+    while (o && !o.userData.type) o = o.parent;
+    select(o);
+  } else select(null);
+});
+
+/* 按钮 */
+const btnRotate = document.getElementById('btn-rotate');
+btnRotate.addEventListener('click', () => {
+  controls.autoRotate = !controls.autoRotate;
+  btnRotate.classList.toggle('on', controls.autoRotate);
+});
+document.getElementById('btn-reset').addEventListener('click', () => {
+  camera.position.copy(CAM_HOME);
+  controls.target.set(0, 2.4, 0);
+  select(null);
+});
+
+/* ============ 主循环 ============ */
+const clock = new THREE.Clock();
+function tick() {
+  requestAnimationFrame(tick);
+  const t = clock.getElapsedTime();
+  uTime.value = t;
+  if (motes) {                       // 微粒缓慢漂移
+    const p = motes.geometry.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      p.setY(i, p.getY(i) + Math.sin(t * 0.6 + i) * 0.0012);
+      p.setX(i, p.getX(i) + Math.cos(t * 0.25 + i * 1.7) * 0.0012);
+    }
+    p.needsUpdate = true;
+  }
+  controls.update();
+  composer.render();
+}
+tick();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
+});
+
+/* ============ 收尾 ============ */
+manager.onLoad = () => {
+  bar.style.width = '100%';
+  loadInfo.textContent = '完成';
+  setTimeout(() => {
+    document.getElementById('loader').classList.add('done');
+    document.getElementById('hud').classList.add('show');
+    document.getElementById('btns').classList.add('show');
+    const hint = document.getElementById('hint');
+    hint.classList.add('show');
+    setTimeout(() => hint.classList.remove('show'), 6000);
+  }, 350);
+};
+</script>
+</body>
+</html>
