@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Luna 的测试页面</title>
+<style>
+  body { font-family: system-ui, sans-serif; text-align: center; padding: 60px 20px; background: linear-gradient(135deg, #667eea, #764ba2); color: #fff; min-height: 100vh; margin: 0; }
+  .card { background: rgba(255,255,255,0.12); border-radius: 16px; padding: 40px; max-width: 560px; margin: 0 auto; backdrop-filter: blur(8px); }
+  h1 { margin-top: 0; }
+  button { background: #fff; color: #764ba2; border: none; border-radius: 999px; padding: 12px 32px; font-size: 16px; cursor: pointer; }
+  #time { font-size: 20px; margin: 20px 0; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>🎉 部署成功！</h1>
+    <p>这个页面是从 GitHub 仓库 jim123321002/muse 提供的</p>
+    <p id="time"></p>
+    <button onclick="document.getElementById(&quot;time&quot;).textContent = &quot;现在是：&quot; + new Date().toLocaleString(&quot;zh-CN&quot;)">点我看时间</button>
+  </div>
+  <script>document.getElementById("time").textContent = "页面加载于：" + new Date().toLocaleString("zh-CN");</script>
+</body>
+</html>
